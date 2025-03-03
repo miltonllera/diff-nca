@@ -1,6 +1,9 @@
+import os
+import os.path as osp
 import io
 import requests
 import argparse
+from datetime import datetime
 from enum import Enum
 from PIL import Image
 from functools import partial, wraps
@@ -486,6 +489,15 @@ def main(
     epochs: int = 3000,
     lr: float = 1e-3,
 ):
+    # checkpointing
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+
+    # ckpt_folder = osp.join('data', 'logs', timestamp)
+    # os.makedirs(ckpt_folder)
+
+    plots_folder = osp.join('plots', timestamp)
+    os.makedirs(plots_folder)
+
     # init dataset
     rng = np.random.default_rng(None)
     dataset = EmojiDataset(emojis, target_size=40, pad=12, batch_size=64, rng=rng)
@@ -528,7 +540,9 @@ def main(
     def example_plots(trainer: Engine):
         with torch.no_grad():
             fig = plot_examples(ddpm, 10)
-            fig.savefig(f"plots/examples_iter:{trainer.state.iteration}.jpeg")
+            fig.savefig(osp.join(
+                f"{plots_folder}", f"examples_iter:{trainer.state.iteration}.jpeg"
+            ))
             plt.close(fig)
 
     trainer.run(train_loader, epochs, 100)
