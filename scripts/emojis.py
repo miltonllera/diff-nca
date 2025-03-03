@@ -488,6 +488,7 @@ def main(
     noise_schedule: Literal['cosine', 'linear'] = 'linear',
     epochs: int = 3000,
     lr: float = 1e-3,
+    lr_decay: float = 1.0,
 ):
     # checkpointing
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -519,8 +520,9 @@ def main(
 
     loss = lambda x, y: nn.functional.mse_loss(x, y, reduction='sum') / len(y)
     optimizer = optim.Adam(ddpm.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, lr_decay) if lr_decay < 1.0 else None
 
-    train_step, val_step = get_process_functions(ddpm, loss, optimizer, None, ema, device)
+    train_step, val_step = get_process_functions(ddpm, loss, optimizer, scheduler, ema, device)
 
     trainer = Engine(train_step)
     ProgressBar().attach(trainer, output_transform=lambda x: {'loss': x})
@@ -555,6 +557,7 @@ if __name__ == "__main__":
     parser.add_argument("--noise_steps", type=int, default=500)
     parser.add_argument("--noise_schedule", type=str, default="cosine")
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--lr_decay", type=float, default=1.0)
     parser.add_argument("--lr", type=float, default=1e-3)
 
     args = parser.parse_args()
