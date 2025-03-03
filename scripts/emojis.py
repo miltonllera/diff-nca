@@ -14,12 +14,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import ignite.metrics as metrics
-from typing import Literal
 from numpy.random import Generator
 from torch.utils.data import DataLoader
 from torch.utils.data import IterableDataset
 from ignite.engine import Engine, Events
 from ignite.handlers import ProgressBar
+from ema_pytorch import EMA
+from typing import Literal
 
 #---------------------------------------------- Dataset ------------------------------------------
 
@@ -379,9 +380,12 @@ class DiffusionModel(nn.Module):
         return x_t
 
 
-def get_process_functions(model, criterion, optimizer, scheduler, device):
+def get_process_functions(model, criterion, optimizer, scheduler=None, ema=None, device='cpu'):
     model = model.to(device)
     parameters = model.parameters()
+
+    if ema is not None:
+        ema.to(device)
 
     def prepare_batch(fn):
         @wraps(fn)
@@ -407,13 +411,16 @@ def get_process_functions(model, criterion, optimizer, scheduler, device):
         if scheduler is not None:
             scheduler.step()
 
+        if ema is not None:
+            ema.update()
+
         return loss.item()
 
     @torch.no_grad()
     @prepare_batch
     def val_step(engine, inputs):
-        model.eval()
-        return model(inputs)
+        val_model = model.eval() if ema is None else ema.ema_model.eval()
+        return val_model(inputs)
 
     return train_step, val_step
 
@@ -493,14 +500,15 @@ def main(
         timesteps=noise_steps,
         schedule_type=noise_schedule
     )
+    ema = EMA(ddpm, beta=0.9, update_every=10)
 
     # training
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
     loss = lambda x, y: nn.functional.mse_loss(x, y, reduction='sum') / len(y)
     optimizer = optim.Adam(ddpm.parameters(), lr=lr)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    train_step, val_step = get_process_functions(ddpm, loss, optimizer, None, device)
+    train_step, val_step = get_process_functions(ddpm, loss, optimizer, None, ema, device)
 
     trainer = Engine(train_step)
     ProgressBar().attach(trainer, output_transform=lambda x: {'loss': x})
