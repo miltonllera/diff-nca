@@ -143,7 +143,7 @@ def train_denoiser(model, dataloader, epochs=100, lr=1e-3, device="cpu"):
 
     parameters = model.parameters()
     optimizer = optim.Adam(parameters, lr=lr)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, 0.5 ** (1/200_000))
+    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, 0.5 ** (1/100_000))
     loss_fn = nn.MSELoss()
 
     for epoch in range(epochs):
@@ -273,7 +273,7 @@ def main(
         timesteps,
         beta_schedule
     )
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 
     if plot_data:
         plot_diffusion(dataset, timesteps)
@@ -296,7 +296,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--num_samples", type=int, default=3000)
-    parser.add_argument("--num_turns", type=float, default=1.3)
+    parser.add_argument("--num_turns", type=float, default=1.25)
     parser.add_argument("--radius_scale", type=float, default=0.2)
     parser.add_argument("--timesteps", type=int, default=500)
     parser.add_argument("--beta_schedule", type=str, default="linear")
