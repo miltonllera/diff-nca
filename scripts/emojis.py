@@ -102,7 +102,7 @@ class EmojiDataset(IterableDataset):
             emoji_list = [e for e in Emojis if e.name.lower() in emoji]
 
         emojis = tuple(map(init_emojis, emoji_list))
-        emoji_names = (e.name for e in emoji_list)
+        emoji_names = list(e.name for e in emoji_list)
 
         transform = transforms.Compose([
             transforms.ToTensor(),
@@ -490,9 +490,9 @@ def plot_emojis(dataset: EmojiDataset):
     return fig
 
 
-def plot_examples(model, n_samples):
-    classes = torch.randint(0, 9, size=(n_samples,))
-    cond = torch.eye(10, dtype=torch.float32)
+def plot_examples(model, dataset, n_samples):
+    classes = torch.randint(high=dataset.num_emojis, size=(n_samples,))
+    cond = torch.zeros((n_samples, dataset.num_emojis))
     cond[torch.arange(n_samples), classes] = 1.0
 
     samples = model.sample((n_samples, 4, 64, 64), c=cond).permute(0, 2, 3, 1).cpu()
@@ -501,11 +501,12 @@ def plot_examples(model, n_samples):
     nrows = int(np.ceil(n_samples / 5))
     n_cols = 5
 
-    fig, axes = plt.subplots(nrows, n_cols, figsize=(12, 6))
+    fig, axes = plt.subplots(nrows, n_cols, figsize=(12, 8))
     axes = axes.ravel()
 
-    for em, ax in zip(samples, axes):
+    for em, c, ax in zip(samples, classes, axes):
         ax.imshow(em)
+        ax.set_title(dataset.emoji_names[c.item()])
         strip(ax)
 
     # plt.show()
@@ -572,11 +573,11 @@ def main(
             f"Avg loss: {metrics['mse']:.2f}"
         )
 
-    @trainer.on(Events.ITERATION_COMPLETED(every=100))
+    @trainer.on(Events.EPOCH_COMPLETED))
     def example_plots(trainer: Engine):
         with torch.no_grad():
             ddpm.eval()
-            fig = plot_examples(ddpm, 10)
+            fig = plot_examples(ddpm, dataset, 20)
             fig.savefig(osp.join(
                 f"{plots_folder}", f"examples_iter:{trainer.state.iteration}.jpeg"
             ))
