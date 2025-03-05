@@ -28,9 +28,9 @@ from typing import Literal
 #---------------------------------------------- Dataset ------------------------------------------
 
 def one_hot(values, max):
-    b = np.zeros((len(values), max))
-    b[np.arange(len(values)), values] = 1.0
-    return b
+    b = np.zeros((len(values), max), dtype=int)
+    b[np.arange(len(values)), values] = 1
+    return b.astype(np.float32)
 
 
 def download_emoji(emoji, max_size):
@@ -116,6 +116,10 @@ class EmojiDataset(IterableDataset):
         self.rng = rng
         self.transform = transform
 
+    @property
+    def num_emojis(self):
+        return len(self.emojis)
+
     def __iter__(self):
         while True:
             yield self.get_emoji()
@@ -177,6 +181,7 @@ class UNet(nn.Module):
         out_channels: int = 3,
         time_emb_dim: int = 128,
         features: list[int] = [64, 128, 256, 512],
+        conditioning_dim: int | None = None,
     ):
         super().__init__()
 
@@ -185,6 +190,11 @@ class UNet(nn.Module):
             nn.Linear(time_emb_dim, time_emb_dim),
             nn.ReLU()
         )
+
+        if conditioning_dim:
+            self.conditioning_fn = nn.Linear(conditioning_dim, time_emb_dim)
+        else:
+            self.register_buffer('conditioning_fn', None)
 
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
@@ -208,16 +218,18 @@ class UNet(nn.Module):
         # Final output layer
         self.final_conv = nn.Conv2d(features[0], out_channels, kernel_size=1)
 
-    def forward(self, x, t):
-        t_emb = self.time_embedding(t)
+    def forward(self, x, t, c = None):
+        cond_emb = self.time_embedding(t)
+        if c is not None and self.conditioning_fn is not None:
+            cond_emb = cond_emb + self.conditioning_fn(c)
 
         skip_connections = []
         for enc_layer in self.encoder:
-            x = enc_layer(x, t_emb)
+            x = enc_layer(x, cond_emb)
             skip_connections.append(x)
             x = self.pool(x)
 
-        x = self.bottleneck(x, t_emb)
+        x = self.bottleneck(x, cond_emb)
 
         skip_connections = skip_connections[::-1]
         for i in range(0, len(self.decoder), 2):
@@ -233,7 +245,7 @@ class UNet(nn.Module):
                 )
 
             x = torch.cat((skip_connection, x), dim=1)
-            x = self.decoder[i + 1](x, t_emb)
+            x = self.decoder[i + 1](x, cond_emb)
 
         return self.final_conv(x)
 
@@ -327,13 +339,18 @@ class DiffusionModel(nn.Module):
         beta_end: float = 0.02,
         s: float = 0.008,
         predict_unscaled_noise: bool = True,
+        conditioning_dim: int | None = None,
+        unconditional_prob: float = 0.2,
+        guidance_weight: float = 1.0,
     ):
         super().__init__()
 
-        self.unet = UNet(in_channels, out_channels, time_emb_dim, features)
+        self.unet = UNet(in_channels, out_channels, time_emb_dim, features, conditioning_dim)
         self.noise_scheduler = NoiseScheduler(
             timesteps, schedule_type, beta_start, beta_end, s, predict_unscaled_noise
         )
+        self.drop_condition = nn.Dropout(unconditional_prob) if conditioning_dim else lambda x: x
+        self.guidance_weight = guidance_weight
 
     def forward(self, x):
         """
@@ -349,10 +366,13 @@ class DiffusionModel(nn.Module):
         x_0, y = x
         t = self.noise_scheduler.sample_time(len(x_0))
         x_t, noise = self.noise_scheduler.corrupt(x_0, t)
-        predicted_noise = self.unet(x_t, t.to(x_t.device))
+
+        y = self.drop_condition(y.to(x_t.device))
+        predicted_noise = self.unet(x_t, t.to(x_t.device), y)
+
         return predicted_noise, noise
 
-    def sample(self, shape):
+    def sample(self, shape, c = None, guidance_weight = None):
         """
         Generates images by reversing the diffusion process.
 
@@ -363,11 +383,21 @@ class DiffusionModel(nn.Module):
         Returns:
             Generated image tensor.
         """
-        x_t = torch.randn(shape).to(next(self.parameters()).device)
+        device = next(self.parameters()).device
+        x_t = torch.randn(shape).to(device)
+        if c is not None:
+            c = c.to(device)
+        if guidance_weight is None:
+            guidance_weight = self.guidance_weight
 
         for t in reversed(range(self.noise_scheduler.timesteps)):
             t_tensor = torch.full((shape[0],), t, dtype=torch.float32).to(x_t.device)
-            predicted_noise = self.unet(x_t, t_tensor)
+
+            unconditional_noise = self.unet(x_t, t_tensor)
+            conditional_noise = self.unet(x_t, t_tensor, c) if c is not None else unconditional_noise
+
+            predicted_noise = unconditional_noise + \
+                guidance_weight * (conditional_noise - unconditional_noise)
 
             alpha_bar = self.noise_scheduler.alpha_bars[t].view(1, 1, 1, 1).to(x_t.device)
             beta = self.noise_scheduler.betas[t].view(1, 1, 1, 1).to(x_t.device)
@@ -511,7 +541,8 @@ def main(
         in_channels=4,
         out_channels=4,
         timesteps=noise_steps,
-        schedule_type=noise_schedule
+        schedule_type=noise_schedule,
+        conditioning_dim=dataset.num_emojis,
     )
     ema = EMA(ddpm, beta=0.9, update_every=10)
 
@@ -557,8 +588,8 @@ if __name__ == "__main__":
     parser.add_argument("--noise_steps", type=int, default=500)
     parser.add_argument("--noise_schedule", type=str, default="cosine")
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr_decay", type=float, default=1.0)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr_decay", type=float, default=1.0)
 
     args = parser.parse_args()
 
