@@ -340,7 +340,7 @@ class DiffusionModel(nn.Module):
         s: float = 0.008,
         predict_unscaled_noise: bool = True,
         conditioning_dim: int | None = None,
-        unconditional_prob: float = 0.2,
+        unconditional_prob: float = 0.1,
         guidance_weight: float = 1.0,
     ):
         super().__init__()
@@ -491,8 +491,11 @@ def plot_emojis(dataset: EmojiDataset):
 
 
 def plot_examples(model, n_samples):
-    model.eval()
-    samples = model.sample((n_samples, 4, 64, 64)).permute(0, 2, 3, 1).cpu()
+    classes = torch.randint(0, 9, size=(n_samples,))
+    cond = torch.eye(10, dtype=torch.float32)
+    cond[torch.arange(n_samples), classes] = 1.0
+
+    samples = model.sample((n_samples, 4, 64, 64), c=cond).permute(0, 2, 3, 1).cpu()
     samples = (samples.clip(-3, 3) + 3) / 6
 
     nrows = int(np.ceil(n_samples / 5))
@@ -572,6 +575,7 @@ def main(
     @trainer.on(Events.ITERATION_COMPLETED(every=100))
     def example_plots(trainer: Engine):
         with torch.no_grad():
+            ddpm.eval()
             fig = plot_examples(ddpm, 10)
             fig.savefig(osp.join(
                 f"{plots_folder}", f"examples_iter:{trainer.state.iteration}.jpeg"
