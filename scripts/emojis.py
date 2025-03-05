@@ -523,6 +523,7 @@ def main(
     epochs: int = 3000,
     lr: float = 1e-3,
     lr_decay: float = 1.0,
+    ema_decay: float = 0.995,
 ):
     # checkpointing
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -548,7 +549,7 @@ def main(
         schedule_type=noise_schedule,
         conditioning_dim=dataset.num_emojis,
     )
-    ema = EMA(ddpm, beta=0.9, update_every=10)
+    ema = EMA(ddpm, beta=ema_decay, update_every=10)
 
     # training
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -573,7 +574,7 @@ def main(
             f"Avg loss: {metrics['mse']:.2f}"
         )
 
-    @trainer.on(Events.EPOCH_COMPLETED))
+    @trainer.on(Events.EPOCH_COMPLETED)
     def example_plots(trainer: Engine):
         with torch.no_grad():
             ddpm.eval()
@@ -595,6 +596,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--lr_decay", type=float, default=1.0)
+    parser.add_argument("--ema_decay", type=float, default=0.995)
 
     args = parser.parse_args()
 
