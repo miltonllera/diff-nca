@@ -27,6 +27,7 @@ from typing import Literal
 
 #---------------------------------------------- Dataset ------------------------------------------
 
+
 def one_hot(values, max):
     b = np.zeros((len(values), max), dtype=int)
     b[np.arange(len(values)), values] = 1
@@ -514,7 +515,6 @@ def plot_examples(model, dataset, n_samples):
 
 
 #---------------------------------------------- Main ---------------------------------------------
-
 
 def main(
     emojis: str,
