@@ -548,6 +548,7 @@ def main(
         timesteps=noise_steps,
         schedule_type=noise_schedule,
         conditioning_dim=dataset.num_emojis,
+        guidance_weight=10.0
     )
     ema = EMA(ddpm, beta=ema_decay, update_every=10)
 
@@ -574,7 +575,7 @@ def main(
             f"Avg loss: {metrics['mse']:.2f}"
         )
 
-    @trainer.on(Events.EPOCH_COMPLETED)
+    @trainer.on(Events.EPOCH_COMPLETED(every=100))
     def example_plots(trainer: Engine):
         with torch.no_grad():
             ddpm.eval()
