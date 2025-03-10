@@ -9,8 +9,9 @@ from PIL import Image
 from functools import partial, wraps
 
 import math
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 import torch
 import torchvision.transforms as transforms
 import torch.nn as nn
@@ -353,6 +354,10 @@ class DiffusionModel(nn.Module):
         self.drop_condition = nn.Dropout(unconditional_prob) if conditioning_dim else lambda x: x
         self.guidance_weight = guidance_weight
 
+    @property
+    def timesteps(self):
+        return self.noise_scheduler.timesteps
+
     def forward(self, x):
         """
         Runs the diffusion model forward pass.
@@ -373,7 +378,7 @@ class DiffusionModel(nn.Module):
 
         return predicted_noise, noise
 
-    def sample(self, shape, c = None, guidance_weight = None):
+    def sample(self, shape, c=None, guidance_weight=None, return_sequence=False):
         """
         Generates images by reversing the diffusion process.
 
@@ -390,6 +395,8 @@ class DiffusionModel(nn.Module):
             c = c.to(device)
         if guidance_weight is None:
             guidance_weight = self.guidance_weight
+        if return_sequence:
+            sequence = [x_t]
 
         for t in reversed(range(self.noise_scheduler.timesteps)):
             t_tensor = torch.full((shape[0],), t, dtype=torch.float32).to(x_t.device)
@@ -407,9 +414,16 @@ class DiffusionModel(nn.Module):
                 (1 / torch.sqrt(1 - beta)) *
                 (x_t - beta / torch.sqrt(1 - alpha_bar) * predicted_noise)
             )
+
             if t > 0:
                 noise = torch.randn_like(x_t)
-                x_t += torch.sqrt(beta) * noise
+                x_t = x_t + torch.sqrt(beta) * noise
+
+            if return_sequence:
+                sequence.append(x_t)  # type: ignore
+
+        if return_sequence:
+            return torch.stack(sequence, dim=1)  # type: ignore
 
         return x_t
 
@@ -489,12 +503,14 @@ def plot_emojis(dataset: EmojiDataset):
     return fig
 
 
-def plot_examples(model, dataset, n_samples):
+def create_diffusion_gif(model, dataset, n_samples, frame_freq):
     classes = torch.randint(high=dataset.num_emojis, size=(n_samples,))
     cond = torch.zeros((n_samples, dataset.num_emojis))
     cond[torch.arange(n_samples), classes] = 1.0
 
-    samples = model.sample((n_samples, 4, 64, 64), c=cond).permute(0, 2, 3, 1).cpu()
+    samples = model.sample(
+        (n_samples, 4, 64, 64), c=cond, return_sequence=True
+    ).permute(0, 1, 3, 4, 2).cpu()
     samples = (samples.clip(-3, 3) + 3) / 6
 
     nrows = int(np.ceil(n_samples / 5))
@@ -503,13 +519,21 @@ def plot_examples(model, dataset, n_samples):
     fig, axes = plt.subplots(nrows, n_cols, figsize=(12, 8))
     axes = axes.ravel()
 
-    for em, c, ax in zip(samples, classes, axes):
-        ax.imshow(em)
+    images = [ax.imshow(samples[i][0]) for i, ax in enumerate(axes)]
+    for ax, c in zip(axes, classes):
+        ax.axis("off")  # Hide axes
         ax.set_title(dataset.emoji_names[c.item()])
-        strip(ax)
 
-    # plt.show()
-    return fig
+    def update(frame):
+        for i, img in enumerate(images):
+            img.set_array(samples[i][frame * frame_freq])  # Loop frames
+        return images
+
+    ani = animation.FuncAnimation(
+        fig, update, frames=model.timesteps // frame_freq, interval=100, blit=False
+    )
+
+    return fig, ani
 
 
 #---------------------------------------------- Main ---------------------------------------------
@@ -520,8 +544,9 @@ def main(
     noise_schedule: Literal['cosine', 'linear'] = 'linear',
     epochs: int = 3000,
     lr: float = 1e-3,
-    lr_decay: float = 1.0,
-    ema_decay: float = 0.995,
+    lr_decay: float | None = None,
+    ema_decay: float | None = None,
+    plot_freq: int = 100,
 ):
     # checkpointing
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -548,14 +573,21 @@ def main(
         conditioning_dim=dataset.num_emojis,
         guidance_weight=1.0
     )
-    ema = EMA(ddpm, beta=ema_decay, update_every=10)
+    if ema_decay is not None:
+        ema = EMA(ddpm, beta=ema_decay, update_every=10, inv_gamma=1.0, power=3/4)
+    else:
+        ema = None
 
     # training
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     loss = lambda x, y: nn.functional.mse_loss(x, y, reduction='sum') / len(y)
     optimizer = optim.Adam(ddpm.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, lr_decay) if lr_decay < 1.0 else None
+
+    if lr_decay is not None:
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, lr_decay) if lr_decay < 1.0 else None
+    else:
+        scheduler = None
 
     train_step, val_step = get_process_functions(ddpm, loss, optimizer, scheduler, ema, device)
 
@@ -567,23 +599,25 @@ def main(
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_training_results(trainer):
-        metrics = validator.run(val_loader, max_epochs=1, epoch_length=10).metrics
+        metrics = validator.run(val_loader, max_epochs=1, epoch_length=20).metrics
         print(
             f"Training Results - Epoch[{trainer.state.epoch}] - " \
             f"Avg loss: {metrics['mse']:.2f}"
         )
 
-    @trainer.on(Events.EPOCH_COMPLETED(every=100))
+    @trainer.on(Events.EPOCH_COMPLETED(every=plot_freq))
     def example_plots(trainer: Engine):
         with torch.no_grad():
             ddpm.eval()
-            fig = plot_examples(ddpm, dataset, 20)
-            fig.savefig(osp.join(
-                f"{plots_folder}", f"examples_iter:{trainer.state.iteration}.jpeg"
-            ))
+            fig, ani = create_diffusion_gif(ddpm, dataset, 20, frame_freq=100)
+            ani.save(osp.join(
+                f"{plots_folder}", f"examples_iter: {trainer.state.iteration}.gif"),
+                writer="pillow",
+                fps=10,
+            )
             plt.close(fig)
 
-    trainer.run(train_loader, epochs, 100)
+    trainer.run(train_loader, max_epochs=epochs, epoch_length=100)
 
 
 if __name__ == "__main__":
@@ -594,8 +628,9 @@ if __name__ == "__main__":
     parser.add_argument("--noise_schedule", type=str, default="cosine")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--lr_decay", type=float, default=1.0)
-    parser.add_argument("--ema_decay", type=float, default=0.995)
+    parser.add_argument("--lr_decay", type=float, default=None)
+    parser.add_argument("--ema_decay", type=float, default=None)
+    parser.add_argument("--plot_freq", type=int, default=100)
 
     args = parser.parse_args()
 
