@@ -431,15 +431,13 @@ def get_process_functions(model, criterion, optimizer, scheduler=None, ema=None,
     @prepare_batch
     def train_step(engine, inputs):
         model.train()
-        predicted_noise, noise = model(inputs)
-
-        loss = criterion(predicted_noise, noise)
-
         optimizer.zero_grad()
+
+        predicted_noise, noise = model(inputs)
+        loss = criterion(predicted_noise, noise)
         loss.backward()
 
         nn.utils.clip_grad_norm_(parameters, 1.0)
-
         optimizer.step()
 
         if scheduler is not None:
@@ -548,7 +546,7 @@ def main(
         timesteps=noise_steps,
         schedule_type=noise_schedule,
         conditioning_dim=dataset.num_emojis,
-        guidance_weight=10.0
+        guidance_weight=1.0
     )
     ema = EMA(ddpm, beta=ema_decay, update_every=10)
 
